@@ -1186,8 +1186,12 @@ ifdef DEVELOPER
 include config.mak.dev
 endif
 
-ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS)
-ALL_LDFLAGS = $(LDFLAGS)
+JSON_CFLAGS += $(shell pkg-config --cflags json-c)
+
+JSON_LDFLAGS += $(shell pkg-config --libs json-c)
+
+ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS) $(JSON_CFLAGS)
+ALL_LDFLAGS = $(LDFLAGS) $(JSON_LDFLAGS)
 
 comma := ,
 empty :=
