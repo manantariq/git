@@ -17,6 +17,7 @@
 #define PUNTED 1
 #define THREE_STAGED 2
 #define SCALING_FACTOR 0.1
+#define similarity_th 0.90
 
 void *RERERE_RESOLVED = &RERERE_RESOLVED;
 
@@ -377,6 +378,226 @@ static void rerere_strbuf_putconflict(struct strbuf *buf, int ch, size_t size)
     strbuf_addch(buf, '\n');
 }
 
+static int max(int x, int y) {
+    return x > y ? x : y;
+}
+
+static int min(int x, int y) {
+    return x < y ? x : y;
+}
+
+static double jaro_winkler_distance(const char *s, const char *a) {
+    int i, j, l;
+    int m = 0, t = 0;
+    int sl = strlen(s);
+    int al = strlen(a);
+    int sflags[sl], aflags[al];
+    int range = max(0, max(sl, al) / 2 - 1);
+    double dw;
+
+    if (!sl || !al)
+        return 0.0;
+
+    for (i = 0; i < al; i++)
+        aflags[i] = 0;
+
+    for (i = 0; i < sl; i++)
+        sflags[i] = 0;
+
+    /* calculate matching characters */
+    for (i = 0; i < al; i++) {
+        for (j = max(i - range, 0), l = min(i + range + 1, sl); j < l; j++) {
+            if (a[i] == s[j] && !sflags[j]) {
+                sflags[j] = 1;
+                aflags[i] = 1;
+                m++;
+                break;
+            }
+        }
+    }
+
+    if (!m)
+        return 0.0;
+
+    /* calculate character transpositions */
+    l = 0;
+    for (i = 0; i < al; i++) {
+        if (aflags[i] == 1) {
+            for (j = l; j < sl; j++) {
+                if (sflags[j] == 1) {
+                    l = j + 1;
+                    break;
+                }
+            }
+            if (a[i] != s[j])
+                t++;
+        }
+    }
+    t /= 2;
+
+    /* Jaro distance */
+    dw = (((double)m / sl) + ((double)m / al) + ((double)(m - t) / m)) / 3.0;
+
+    /* calculate common string prefix up to 4 chars */
+    l = 0;
+    for (i = 0; i < min(min(sl, al), 4); i++)
+        if (s[i] == a[i])
+            l++;
+
+    /* Jaro-Winkler distance */
+    dw = dw + (l * SCALING_FACTOR * (1 - dw));
+
+    //fprintf_ln(stderr, _("jaroW: %lf\n"),dw);
+    return dw;
+}
+
+
+static size_t levenshtein_n(const char *a, const size_t length, const char *b, const size_t bLength) {
+    // Shortcut optimizations / degenerate cases.
+    if (a == b) {
+        return 0;
+    }
+
+    if (length == 0) {
+        return bLength;
+    }
+
+    if (bLength == 0) {
+        return length;
+    }
+
+    size_t *cache = calloc(length, sizeof(size_t));
+    size_t index = 0;
+    size_t bIndex = 0;
+    size_t distance;
+    size_t bDistance;
+    size_t result;
+    char code;
+
+    // initialize the vector.
+    while (index < length) {
+        cache[index] = index + 1;
+        index++;
+    }
+
+    // Loop.
+    while (bIndex < bLength) {
+        code = b[bIndex];
+        result = distance = bIndex++;
+        index = SIZE_MAX;
+
+        while (++index < length) {
+            bDistance = code == a[index] ? distance : distance + 1;
+            distance = cache[index];
+
+            cache[index] = result = distance > result
+                                    ? bDistance > result
+                                      ? result + 1
+                                      : bDistance
+                                    : bDistance > distance
+                                      ? distance + 1
+                                      : bDistance;
+        }
+    }
+
+    free(cache);
+
+    return result;
+}
+
+static size_t levenshtein(const char *a, const char *b) {
+    const size_t length = strlen(a);
+    const size_t bLength = strlen(b);
+
+    size_t leve = levenshtein_n(a, length, b, bLength);
+    //fprintf_ln(stderr, _("leve: %zu\n\n"),leve);
+    return leve;
+}
+
+static const char* get_conflict_json_id(char* conflict)
+{
+    fprintf_ln(stderr, _("LOG_ENTER: get_conflict_json_id function"));
+
+    struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
+    if (!file_json) // if file is empty
+        return "1";
+
+    fprintf_ln(stderr, _("get_conflict_json_id : after open file"));
+
+    double jaroW = 0 ;
+    //size_t leve = 0 ;
+    const char* groupId = NULL;
+    double max_sim = similarity_th;
+    char* idCount;
+
+    fprintf_ln(stderr, _("conflict: %s"),conflict);
+
+    json_object_object_foreach(file_json,key,val){
+        struct json_object *obj;
+        const char* jconf;
+        int arraylen = json_object_array_length(val);
+
+        idCount = key;
+
+        for (int i = 0; i < arraylen; i++) {
+            obj = json_object_array_get_idx(val, i);
+            jconf = json_object_get_string(json_object_object_get(obj, "conflict"));
+            fprintf_ln(stderr, _("json_conflict: %s"),jconf);
+            jaroW = jaro_winkler_distance(conflict,jconf);
+            fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
+            if (jaroW >= max_sim) {
+                max_sim = jaroW;
+                groupId = key;
+            }
+        }
+    }
+
+    if (!groupId) {
+        groupId = json_object_to_json_string(json_object_new_int(atoi(idCount)+1));
+    }
+
+    fprintf_ln(stderr, _("LOG_EXIT: get_conflict_json_id : groupID %s"),groupId);
+    return groupId;
+}
+
+static void write_json_conflict_index(char* conflict, char* resolution)
+{
+    fprintf_ln(stderr, _("LOG_ENTER: write_json_conflict_index function"));
+    struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
+    if (!file_json) // if file is empty
+        file_json = json_object_new_object();
+
+    const char* group_id = get_conflict_json_id(conflict);
+
+    struct json_object *object = json_object_new_object();
+
+    struct json_object *jarray = json_object_new_array();
+    // check if groupId exists in json
+    jarray = json_object_object_get(file_json, group_id);
+
+    if(!jarray)
+        jarray = json_object_new_array();
+
+    if (json_object_array_length(jarray)) { // get object id1 if exists
+        //add new line to object id1
+        json_object_object_add(object, "conflict", json_object_new_string(conflict));
+        json_object_object_add(object, "resolution", json_object_new_string(resolution));
+        json_object_array_add(jarray,object);
+    } else { // if id1 not exists
+        json_object_object_add(object, "conflict", json_object_new_string(conflict));
+        json_object_object_add(object, "resolution", json_object_new_string(resolution));
+        json_object_array_add(jarray,object);
+        json_object_object_add(file_json,group_id,jarray);
+    }
+
+    FILE *fp = fopen(".git/rr-cache/conflict_index.json","w");
+    if (!fp)
+        return;
+    //update or add groupid to file
+    fprintf(fp,"%s", json_object_to_json_string_ext(file_json,2));
+    fclose(fp);
+    fprintf_ln(stderr, _("LOG_EXIT: write_json_conflict_index function"));
+}
 
 static char* get_file_hash (const char *path)
 {
@@ -626,142 +847,6 @@ static char* remove_spaces(char *s){
     return str;
 }
 
-static int max(int x, int y) {
-    return x > y ? x : y;
-}
-
-static int min(int x, int y) {
-    return x < y ? x : y;
-}
-
-static double jaro_winkler_distance(const char *s, const char *a) {
-    int i, j, l;
-    int m = 0, t = 0;
-    int sl = strlen(s);
-    int al = strlen(a);
-    int sflags[sl], aflags[al];
-    int range = max(0, max(sl, al) / 2 - 1);
-    double dw;
-
-    if (!sl || !al)
-        return 0.0;
-
-    for (i = 0; i < al; i++)
-        aflags[i] = 0;
-
-    for (i = 0; i < sl; i++)
-        sflags[i] = 0;
-
-    /* calculate matching characters */
-    for (i = 0; i < al; i++) {
-        for (j = max(i - range, 0), l = min(i + range + 1, sl); j < l; j++) {
-            if (a[i] == s[j] && !sflags[j]) {
-                sflags[j] = 1;
-                aflags[i] = 1;
-                m++;
-                break;
-            }
-        }
-    }
-
-    if (!m)
-        return 0.0;
-
-    /* calculate character transpositions */
-    l = 0;
-    for (i = 0; i < al; i++) {
-        if (aflags[i] == 1) {
-            for (j = l; j < sl; j++) {
-                if (sflags[j] == 1) {
-                    l = j + 1;
-                    break;
-                }
-            }
-            if (a[i] != s[j])
-                t++;
-        }
-    }
-    t /= 2;
-
-    /* Jaro distance */
-    dw = (((double)m / sl) + ((double)m / al) + ((double)(m - t) / m)) / 3.0;
-
-    /* calculate common string prefix up to 4 chars */
-    l = 0;
-    for (i = 0; i < min(min(sl, al), 4); i++)
-        if (s[i] == a[i])
-            l++;
-
-    /* Jaro-Winkler distance */
-    dw = dw + (l * SCALING_FACTOR * (1 - dw));
-
-    //fprintf_ln(stderr, _("jaroW: %lf\n"),dw);
-    return dw;
-}
-
-
-static size_t levenshtein_n(const char *a, const size_t length, const char *b, const size_t bLength) {
-    // Shortcut optimizations / degenerate cases.
-    if (a == b) {
-        return 0;
-    }
-
-    if (length == 0) {
-        return bLength;
-    }
-
-    if (bLength == 0) {
-        return length;
-    }
-
-    size_t *cache = calloc(length, sizeof(size_t));
-    size_t index = 0;
-    size_t bIndex = 0;
-    size_t distance;
-    size_t bDistance;
-    size_t result;
-    char code;
-
-    // initialize the vector.
-    while (index < length) {
-        cache[index] = index + 1;
-        index++;
-    }
-
-    // Loop.
-    while (bIndex < bLength) {
-        code = b[bIndex];
-        result = distance = bIndex++;
-        index = SIZE_MAX;
-
-        while (++index < length) {
-            bDistance = code == a[index] ? distance : distance + 1;
-            distance = cache[index];
-
-            cache[index] = result = distance > result
-                                    ? bDistance > result
-                                      ? result + 1
-                                      : bDistance
-                                    : bDistance > distance
-                                      ? distance + 1
-                                      : bDistance;
-        }
-    }
-
-    free(cache);
-
-    return result;
-}
-
-static size_t levenshtein(const char *a, const char *b) {
-    const size_t length = strlen(a);
-    const size_t bLength = strlen(b);
-
-    size_t leve = levenshtein_n(a, length, b, bLength);
-    //fprintf_ln(stderr, _("leve: %zu\n\n"),leve);
-    return leve;
-}
-
 static void conflict_suggestion(char *conflict)
 {
     fprintf_ln(stderr, _("conflict_suggestion: ENTER"));
@@ -782,9 +867,6 @@ static void conflict_suggestion(char *conflict)
     char* file_conflict;
     fprintf_ln(stderr, _("conflict_suggestion: conflict: %s\n"),conflict);
     while (current != NULL) {
-        //printf("CONFLICT %s ", current->conflict);
-        //printf("RESOLUTION %s", current->resolution);
-        //printf("\n");
         jaroW = jaro_winkler_distance(conflict,current->conflict);
         leve = levenshtein(conflict,current->conflict);
 
@@ -1751,10 +1833,12 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
 
             if (conflict_area == RR_SIDE_1) {
                 write_conflict_index(pre_buf_B.buf,post_buf_out.buf);
+                write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf);
             }
 
             if (conflict_area == RR_SIDE_2) {
                 write_conflict_index(pre_buf_A.buf,post_buf_out.buf);
+                write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
             }
 
         } else {
