@@ -514,7 +514,7 @@ static size_t levenshtein(const char *a, const char *b) {
     return leve;
 }
 
-static const char* get_conflict_json_id(char* conflict)
+static const char* get_conflict_json_id(char* conflict,char* resolution)
 {
     fprintf_ln(stderr, _("LOG_ENTER: get_conflict_json_id function"));
 
@@ -530,11 +530,13 @@ static const char* get_conflict_json_id(char* conflict)
     double max_sim = similarity_th;
     char* idCount;
 
-    fprintf_ln(stderr, _("conflict: %s"),conflict);
+    fprintf_ln(stderr, _("\nconflict: %s"),conflict);
+    fprintf_ln(stderr, _("resolution: %s\n"),resolution);
 
     json_object_object_foreach(file_json,key,val){
         struct json_object *obj;
         const char* jconf;
+        const char* jresol;
         int arraylen = json_object_array_length(val);
 
         idCount = key;
@@ -542,6 +544,13 @@ static const char* get_conflict_json_id(char* conflict)
         for (int i = 0; i < arraylen; i++) {
             obj = json_object_array_get_idx(val, i);
             jconf = json_object_get_string(json_object_object_get(obj, "conflict"));
+            jresol = json_object_get_string(json_object_object_get(obj, "resolution"));
+
+            if (strcmp(conflict,jconf) == 0 && strcmp(resolution,jresol) == 0) {
+                fprintf_ln(stderr, _("LOG_EXIT: get_conflict_json_id : conflict and resolution already present in json file\n"));
+                return NULL;
+            }
+
             fprintf_ln(stderr, _("json_conflict: %s"),jconf);
             jaroW = jaro_winkler_distance(conflict,jconf);
             fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
@@ -560,14 +569,17 @@ static const char* get_conflict_json_id(char* conflict)
     return groupId;
 }
 
-static void write_json_conflict_index(char* conflict, char* resolution)
+static int write_json_conflict_index(char* conflict, char* resolution)
 {
     fprintf_ln(stderr, _("LOG_ENTER: write_json_conflict_index function"));
     struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
     if (!file_json) // if file is empty
         file_json = json_object_new_object();
 
-    const char* group_id = get_conflict_json_id(conflict);
+    const char* group_id = get_conflict_json_id(conflict,resolution);
+
+    if (!group_id)
+        return 0;
 
     struct json_object *object = json_object_new_object();
 
@@ -592,11 +604,12 @@ static void write_json_conflict_index(char* conflict, char* resolution)
 
     FILE *fp = fopen(".git/rr-cache/conflict_index.json","w");
     if (!fp)
-        return;
+        return 0;
     //update or add groupid to file
     fprintf(fp,"%s", json_object_to_json_string_ext(file_json,2));
     fclose(fp);
     fprintf_ln(stderr, _("LOG_EXIT: write_json_conflict_index function"));
+    return 1;
 }
 
 static char* get_file_hash (const char *path)
@@ -1784,6 +1797,7 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
         RR_NO_SIDE,
     } conflict_area = RR_NO_SIDE;
 
+    int update_json = 0;
 
     struct rerere_io_file pre;
     const char *pre_path = rerere_path(id, "preimage");
@@ -1833,17 +1847,42 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
 
             if (conflict_area == RR_SIDE_1) {
                 write_conflict_index(pre_buf_B.buf,post_buf_out.buf);
-                write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf);
+                //update_json = write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf);
+                if (write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf)) {
+                    update_json = 1;
+                }
+
             }
 
             if (conflict_area == RR_SIDE_2) {
                 write_conflict_index(pre_buf_A.buf,post_buf_out.buf);
-                write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
+                //update_json = write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
+                if (write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf)) {
+                    update_json = 1;
+                }
             }
-
         } else {
             //increment postimage pointer
             post.io.getline(&post_buf, &post.io);
+        }
+    }
+
+    if (update_json) {
+        //TODO adjust the path to jar file
+        pid_t pid = fork();
+        if (pid == 0) { // child process
+            /* open /dev/null for writing */
+            int fd = open("/dev/null", O_WRONLY);
+            dup2(fd, 1);    /* make stdout a copy of fd (> /dev/null) */
+            //dup2(fd, 2);    /* ...and same with stderr */
+            close(fd);
+            fprintf_ln(stderr, _("\n\n\nJAR PROCESS IS STARTING IN BACKGROUND!!!!!\n\n\n"));
+            execl("/usr/bin/java", "/usr/bin/java", "-jar", "/Users/manan/Downloads/git/search-and-replace/RandomSearchReplaceTurtle.jar",
+                  "/Users/manan/Downloads/git/search-and-replace/example_configuration.json",(char*)0);
+        } else { //parent process
+            //int status;
+            //(void)waitpid(pid, &status, 0);
+            //fprintf_ln(stderr, _("\n\n\nGIT PROCESS GO ON !!!!!\n\n\n"));
         }
     }
 
