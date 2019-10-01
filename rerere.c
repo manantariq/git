@@ -214,7 +214,7 @@ static struct rerere_id *new_rerere_id(unsigned char *sha1)
  */
 static void read_rr(struct repository *r, struct string_list *rr)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: read_rr function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: read_rr function"));
     struct strbuf buf = STRBUF_INIT;
     FILE *in = fopen_or_warn(git_path_merge_rr(r), "r");
 
@@ -232,13 +232,13 @@ static void read_rr(struct repository *r, struct string_list *rr)
             die(_("corrupt MERGE_RR"));
 
         if (buf.buf[hexsz] != '.') {
-            fprintf_ln(stderr, _("read_rr: variant = 0"));
+            //fprintf_ln(stderr, _("read_rr: variant = 0"));
             variant = 0;
             path = buf.buf + hexsz;
         } else {
             errno = 0;
             variant = strtol(buf.buf + hexsz + 1, &path, 10);
-            fprintf_ln(stderr, _("read_rr: variant = '%d'"),variant);
+            //fprintf_ln(stderr, _("read_rr: variant = '%d'"),variant);
             if (errno)
                 die(_("corrupt MERGE_RR"));
         }
@@ -251,7 +251,7 @@ static void read_rr(struct repository *r, struct string_list *rr)
     }
     strbuf_release(&buf);
     fclose(in);
-    fprintf_ln(stderr, _("LOG_EXIT: read_rr function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: read_rr function"));
 }
 
 static struct lock_file write_lock;
@@ -514,6 +514,12 @@ static size_t levenshtein(const char *a, const char *b) {
     return leve;
 }
 
+/*
+ * return null if conflict and resolution are already present in json file
+ * otherwise return id of the group with jaro-winkler similarity greater than 0.90 or
+ * return a new id
+ * resolution can be null if you want only group id
+ */
 static const char* get_conflict_json_id(char* conflict,char* resolution)
 {
     fprintf_ln(stderr, _("LOG_ENTER: get_conflict_json_id function"));
@@ -522,16 +528,14 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
     if (!file_json) // if file is empty
         return "1";
 
-    fprintf_ln(stderr, _("get_conflict_json_id : after open file"));
-
     double jaroW = 0 ;
     //size_t leve = 0 ;
     const char* groupId = NULL;
     double max_sim = similarity_th;
     char* idCount;
 
-    fprintf_ln(stderr, _("\nconflict: %s"),conflict);
-    fprintf_ln(stderr, _("resolution: %s\n"),resolution);
+    //fprintf_ln(stderr, _("\nconflict: %s"),conflict);
+    //fprintf_ln(stderr, _("resolution: %s\n"),resolution);
 
     json_object_object_foreach(file_json,key,val){
         struct json_object *obj;
@@ -546,14 +550,17 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
             jconf = json_object_get_string(json_object_object_get(obj, "conflict"));
             jresol = json_object_get_string(json_object_object_get(obj, "resolution"));
 
-            if (strcmp(conflict,jconf) == 0 && strcmp(resolution,jresol) == 0) {
-                fprintf_ln(stderr, _("LOG_EXIT: get_conflict_json_id : conflict and resolution already present in json file\n"));
-                return NULL;
+            if (resolution) {
+                if (strcmp(conflict, jconf) == 0 && strcmp(resolution, jresol) == 0) {
+                    fprintf_ln(stderr,
+                               _("LOG_EXIT: get_conflict_json_id : conflict and resolution already present in json file\n"));
+                    return NULL;
+                }
             }
 
-            fprintf_ln(stderr, _("json_conflict: %s"),jconf);
+            //fprintf_ln(stderr, _("json_conflict: %s"),jconf);
             jaroW = jaro_winkler_distance(conflict,jconf);
-            fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
+            //fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
             if (jaroW >= max_sim) {
                 max_sim = jaroW;
                 groupId = key;
@@ -561,7 +568,8 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
         }
     }
 
-    if (!groupId) {
+    if (!groupId && resolution) { //if group == null and resolution != null
+        //create new group id
         groupId = json_object_to_json_string(json_object_new_int(atoi(idCount)+1));
     }
 
@@ -705,7 +713,7 @@ static void write_conflict_index(char* conflict, char* resolution)
 static int handle_conflict(struct strbuf *out, struct rerere_io *io,
                            int marker_size, git_hash_ctx *ctx)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: handle_conflict function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: handle_conflict function"));
     enum {
         RR_SIDE_1 = 0,  // = 0
         RR_SIDE_2,      // = 1
@@ -772,7 +780,7 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
     strbuf_release(&one);
     strbuf_release(&two);
     strbuf_release(&buf);
-    fprintf_ln(stderr, _("LOG_EXIT: handle_conflict function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: handle_conflict function"));
     return has_conflicts;
 }
 
@@ -790,7 +798,7 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
  */
 static int handle_path(unsigned char *hash, struct rerere_io *io, int marker_size)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: handle_path function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: handle_path function"));
     git_hash_ctx ctx;
     struct strbuf buf = STRBUF_INIT, out = STRBUF_INIT;
     int has_conflicts = 0;
@@ -813,7 +821,7 @@ static int handle_path(unsigned char *hash, struct rerere_io *io, int marker_siz
 
     if (hash)
         the_hash_algo->final_fn(hash, &ctx);
-    fprintf_ln(stderr, _("LOG_EXIT: handle_path function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: handle_path function"));
     return has_conflicts;
 }
 
@@ -860,6 +868,64 @@ static char* remove_spaces(char *s){
     return str;
 }
 
+static void regex_repalce_suggestion(char *conflict)
+{
+    fprintf_ln(stderr, _("LOG_ENTER: regex_repalce_suggestion"));
+    char *groupId = get_conflict_json_id(conflict,NULL);
+
+    if (!groupId)
+        return;
+
+    struct json_object *regex_json = json_object_from_file(".git/rr-cache/regex_replace_index.json");
+    if (!regex_json)
+        return;
+
+    // check if groupId exists in json
+    struct json_object *jobject = json_object_object_get(regex_json, groupId);
+    if (!jobject)
+        return;
+
+    const char* regex = json_object_get_string(json_object_object_get(jobject, "regex"));
+    const char* replace = json_object_get_string(json_object_object_get(jobject, "replace"));
+
+    fprintf_ln(stderr, _("regex: %s"),regex);
+    fprintf_ln(stderr, _("replace: %s"),replace);
+
+    pid_t pid = fork();
+    if (pid == 0) { // child process
+        /* open /dev/null for writing */
+        //int fd = open("/Users/manan/Downloads/text.txt", O_WRONLY);
+        int fd = open(".git/rr-cache/string_replace.txt", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+        dup2(fd, 1);    /* make stdout a copy of fd (> /dev/null) */
+        //dup2(fd, 2);    /* ...and same with stderr */
+        close(fd);
+        execl("/usr/bin/java", "/usr/bin/java", "-jar", "/Users/manan/Downloads/RegexReplacement.jar",conflict,regex,replace,(char*)0);
+    } else { //parent process
+        int status;
+        (void)waitpid(pid, &status, 0);
+        printf("\nJar Process terminate with code: %d\n",status);
+
+        if (!status) {
+            struct strbuf buf = STRBUF_INIT;
+            struct rerere_io_file io;
+            memset(&io, 0, sizeof(io));
+            io.io.getline = rerere_file_getline;
+            io.input = fopen(".git/rr-cache/string_replace.txt", "r");
+
+            io.io.wrerror = 0;
+            if (io.input) {
+                while (!io.io.getline(&buf, &io.io)) {
+                    fprintf_ln(stderr, _("REGEX: %s"), buf.buf);
+                }
+                fclose(io.input);
+                unlink_or_warn(".git/rr-cache/string_replace.txt");
+            }
+            strbuf_release(&buf);
+        }
+    }
+    fprintf_ln(stderr, _("LOG_EXIT: regex_repalce_suggestion"));
+}
+
 static void conflict_suggestion(char *conflict)
 {
     fprintf_ln(stderr, _("conflict_suggestion: ENTER"));
@@ -891,6 +957,9 @@ static void conflict_suggestion(char *conflict)
         current = current->next;
     }
     fprintf_ln(stderr, _("file_conflict:%s\nresolution:%s\nsimilarity: %lf\n"),file_conflict,solution,max_similarity);
+
+    regex_repalce_suggestion(conflict);
+
     fprintf_ln(stderr, _("conflict_suggestion: EXIT"));
 }
 
@@ -1339,7 +1408,7 @@ static int compare_n_update(struct rerere_io *cur,struct rerere_io *pre,struct r
 static int handle_file(struct index_state *istate,
                        const char *path, unsigned char *hash, const char *output)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: handle_file function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: handle_file function"));
     int has_conflicts = 0;
     struct rerere_io_file io;
     int marker_size = ll_merge_marker_size(istate, path);
@@ -1376,7 +1445,7 @@ static int handle_file(struct index_state *istate,
     }
     if (io.io.wrerror)
         return -1;
-    fprintf_ln(stderr, _("LOG_EXIT: handle_file function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: handle_file function"));
     return has_conflicts;
 }
 
@@ -1498,7 +1567,7 @@ static int try_merge(struct index_state *istate,
                      const struct rerere_id *id, const char *path,
                      mmfile_t *cur, mmbuffer_t *result)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: try_merge function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: try_merge function"));
     int ret;
     mmfile_t base = {NULL, 0}, other = {NULL, 0};
 
@@ -1515,7 +1584,7 @@ static int try_merge(struct index_state *istate,
 
     free(base.ptr);
     free(other.ptr);
-    fprintf_ln(stderr, _("LOG_EXIT: try_merge function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: try_merge function"));
     return ret;
 }
 
@@ -1531,7 +1600,7 @@ static int try_merge(struct index_state *istate,
  */
 static int merge(struct index_state *istate, const struct rerere_id *id, const char *path)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: merge function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: merge function"));
     FILE *f;
     int ret;
     mmfile_t cur = {NULL, 0};
@@ -1571,7 +1640,7 @@ static int merge(struct index_state *istate, const struct rerere_id *id, const c
     out:
     free(cur.ptr);
     free(result.ptr);
-    fprintf_ln(stderr, _("LOG_EXIT: merge function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: merge function"));
     return ret;
 }
 
