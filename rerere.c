@@ -17,7 +17,7 @@
 #define PUNTED 1
 #define THREE_STAGED 2
 #define SCALING_FACTOR 0.1
-#define similarity_th 0.90
+#define similarity_th 0.85
 
 void *RERERE_RESOLVED = &RERERE_RESOLVED;
 
@@ -378,6 +378,24 @@ static void rerere_strbuf_putconflict(struct strbuf *buf, int ch, size_t size)
     strbuf_addch(buf, '\n');
 }
 
+static char* remove_spaces(char *s)
+{
+    struct strbuf temp = STRBUF_INIT;
+
+    while(*s++) {
+        if (*s != ' ' && *s != '\n' && *s != '\0') {
+            strbuf_addch(&temp,*s);
+        }
+    }
+    char *str = temp.buf;
+    if (strlen(str) == 0) {
+        str = NULL;
+    }
+
+    strbuf_release(&temp);
+    return str;
+}
+
 static int max(int x, int y) {
     return x > y ? x : y;
 }
@@ -560,7 +578,7 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
 
             //fprintf_ln(stderr, _("json_conflict: %s"),jconf);
             jaroW = jaro_winkler_distance(conflict,jconf);
-            //fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
+            fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
             if (jaroW >= max_sim) {
                 max_sim = jaroW;
                 groupId = key;
@@ -580,6 +598,10 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
 static int write_json_conflict_index(char* conflict, char* resolution)
 {
     fprintf_ln(stderr, _("LOG_ENTER: write_json_conflict_index function"));
+
+    if (strlen(remove_spaces(conflict)) == 0 || strlen(remove_spaces(resolution)) == 0)
+        return 0;
+
     struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
     if (!file_json) // if file is empty
         file_json = json_object_new_object();
@@ -758,9 +780,6 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
             rerere_strbuf_putconflict(out, '=', marker_size); // add = marker_size time in out
             strbuf_addbuf(out, &two); // add content of two in out
             rerere_strbuf_putconflict(out, '>', marker_size); // add > marker_size time in out
-            //fprintf_ln(stderr, _("reach the end -out- '%s'"),out->buf);
-            //fprintf_ln(stderr, _("one.len =  '%u'"),one.len);
-            //fprintf_ln(stderr, _("two.len =  '%u'"),two.len);
             if (ctx) {
                 the_hash_algo->update_fn(ctx, one.buf ?
                                               one.buf : "",
@@ -840,44 +859,19 @@ static int my_cmarker(char *buf, int marker_char, int marker_size)
     return 1;
 }
 
-static char* remove_spaces(char *s){
-
-    // To keep track of non-space character count
-    //int count = 0;
-    //fprintf_ln(stderr, _("remove_spaces: S : %s"),s);
-
-    struct strbuf temp = STRBUF_INIT;
-
-    while(*s++) {
-        if (*s != ' ' && *s != '\n' && *s != '\0') {
-            //*str = *s;
-            //str++;
-            strbuf_addch(&temp,*s);
-        }
-    }
-    char *str = temp.buf;
-
-    //fprintf_ln(stderr, _("remove_spaces: str : %lu"),strlen(str));
-
-    if (strlen(str) == 0) {
-        str = NULL;
-    }
-
-    //fprintf_ln(stderr, _("remove_spaces: str : %s"),str);
-    strbuf_release(&temp);
-    return str;
-}
-
 static void regex_repalce_suggestion(char *conflict)
 {
     fprintf_ln(stderr, _("LOG_ENTER: regex_repalce_suggestion"));
+
+    struct json_object *regex_json = json_object_from_file(".git/rr-cache/regex_replace_index.json");
+    if (!regex_json) {
+        fprintf_ln(stderr, _("LOG_EXIT: regex_repalce_suggestion: regex_replace_index does not exists "));
+        return;
+    }
+
     char *groupId = get_conflict_json_id(conflict,NULL);
 
     if (!groupId)
-        return;
-
-    struct json_object *regex_json = json_object_from_file(".git/rr-cache/regex_replace_index.json");
-    if (!regex_json)
         return;
 
     // check if groupId exists in json
@@ -957,8 +951,6 @@ static void conflict_suggestion(char *conflict)
         current = current->next;
     }
     fprintf_ln(stderr, _("file_conflict:%s\nresolution:%s\nsimilarity: %lf\n"),file_conflict,solution,max_similarity);
-
-    regex_repalce_suggestion(conflict);
 
     fprintf_ln(stderr, _("conflict_suggestion: EXIT"));
 }
@@ -1916,16 +1908,14 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
 
             if (conflict_area == RR_SIDE_1) {
                 write_conflict_index(pre_buf_B.buf,post_buf_out.buf);
-                //update_json = write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf);
                 if (write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf)) {
                     update_json = 1;
                 }
-
             }
 
             if (conflict_area == RR_SIDE_2) {
                 write_conflict_index(pre_buf_A.buf,post_buf_out.buf);
-                //update_json = write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
+                update_json = write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
                 if (write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf)) {
                     update_json = 1;
                 }
@@ -1934,6 +1924,16 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
             //increment postimage pointer
             post.io.getline(&post_buf, &post.io);
         }
+
+        strbuf_reset(&pre_buf);
+        strbuf_reset(&pre_buf_A);
+        strbuf_reset(&pre_buf_B);
+        strbuf_reset(&post_buf);
+        strbuf_reset(&post_buf_out);
+
+        string_list_init(&pre_list_A,1);
+        string_list_init(&pre_list_B,1);
+        string_list_init(&post_list,1);
     }
 
     if (update_json) {
@@ -1959,6 +1959,7 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
     strbuf_release(&pre_buf_A);
     strbuf_release(&pre_buf_B);
     strbuf_release(&post_buf);
+    strbuf_release(&post_buf_out);
 
     string_list_clear(&pre_list_A,1);
     string_list_clear(&pre_list_B,1);
@@ -1973,6 +1974,9 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
 
 static int check_conflict_suggestion(struct index_state *istate, struct rerere_id *id,const char* path)
 {
+    if(access(git_path("rr-cache/%s", "conflict_index"), F_OK ) == -1  &&  access(git_path("rr-cache/%s", "regex_replace_index.json"), F_OK ) == -1)
+        return 0;
+
     if (handle_file(istate, path, NULL, rerere_path(id, "curimage")) < 0) {
         return  0;
     }
@@ -1995,10 +1999,12 @@ static int check_conflict_suggestion(struct index_state *istate, struct rerere_i
     while (!cur.io.getline(&cur_buf, &cur.io)) {
         if (my_cmarker(cur_buf.buf, '<', marker_size)) {
             separate_conflict_area(&cur.io, &cur_buf_A, &cur_buf_B, marker_size, &cur_list_A, &cur_list_B);
+            conflict_suggestion(cur_buf_A.buf);
+            conflict_suggestion(cur_buf_B.buf);
+            regex_repalce_suggestion(cur_buf_A.buf);
+            regex_repalce_suggestion(cur_buf_B.buf);
         }
     }
-    conflict_suggestion(cur_buf_A.buf);
-    conflict_suggestion(cur_buf_B.buf);
 
     strbuf_release(&cur_buf);
     strbuf_release(&cur_buf_A);
@@ -2008,6 +2014,7 @@ static int check_conflict_suggestion(struct index_state *istate, struct rerere_i
 
     fclose(cur.input);
     unlink_or_warn(rerere_path(id, "curimage"));
+    fprintf_ln(stderr, _("LOG_EXIT: check_conflict_suggestion function"));
     return 1;
 }
 
@@ -2114,7 +2121,7 @@ static int do_plain_rerere(struct repository *r,
     int i;
 
     find_conflict(r, &conflict);
-    fprintf_ln(stderr, _("do_plain_rerere: conflict->nr: '%d'"),conflict.nr);
+    //fprintf_ln(stderr, _("do_plain_rerere: conflict->nr: '%d'"),conflict.nr);
     /*
      * MERGE_RR records paths with conflicts immediately after
      * merge failed.  Some of the conflicted paths might have been
@@ -2134,12 +2141,11 @@ static int do_plain_rerere(struct repository *r,
          */
         ret = handle_file(r->index, path, hash, NULL);
         if (ret != 0 && string_list_has_string(rr, path)) {
-            fprintf_ln(stderr, _("do_plain_rerere: remove variant"));
             remove_variant(string_list_lookup(rr, path)->util);
             string_list_remove(rr, path, 1);
         }
         if (ret < 1) {
-            fprintf_ln(stderr, _("do_plain_rerere: ret < 1 continue"));
+            //fprintf_ln(stderr, _("do_plain_rerere: ret < 1 continue"));
             continue;
         }
 
