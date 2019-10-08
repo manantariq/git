@@ -30,6 +30,8 @@ static int rerere_autoupdate;
 static int rerere_dir_nr;
 static int rerere_dir_alloc;
 
+struct string_list groupId_list = STRING_LIST_INIT_NODUP; // list of json groupId that has been changed
+
 #define RR_HAS_POSTIMAGE 1
 #define RR_HAS_PREIMAGE 2
 static struct rerere_dir {
@@ -638,6 +640,9 @@ static int write_json_conflict_index(char* conflict, char* resolution)
     //update or add groupid to file
     fprintf(fp,"%s", json_object_to_json_string_ext(file_json,2));
     fclose(fp);
+
+    string_list_insert(&groupId_list,group_id);
+
     fprintf_ln(stderr, _("LOG_EXIT: write_json_conflict_index function"));
     return 1;
 }
@@ -863,13 +868,13 @@ static void regex_repalce_suggestion(char *conflict)
 {
     fprintf_ln(stderr, _("LOG_ENTER: regex_repalce_suggestion"));
 
-    struct json_object *regex_json = json_object_from_file(".git/rr-cache/regex_replace_index.json");
+    struct json_object *regex_json = json_object_from_file("/Users/manan/Downloads/git/search-and-replace/regex_replace_index.json");
     if (!regex_json) {
         fprintf_ln(stderr, _("LOG_EXIT: regex_repalce_suggestion: regex_replace_index does not exists "));
         return;
     }
 
-    char *groupId = get_conflict_json_id(conflict,NULL);
+    const char *groupId = get_conflict_json_id(conflict,NULL);
 
     if (!groupId)
         return;
@@ -880,10 +885,11 @@ static void regex_repalce_suggestion(char *conflict)
         return;
 
     const char* regex = json_object_get_string(json_object_object_get(jobject, "regex"));
-    const char* replace = json_object_get_string(json_object_object_get(jobject, "replace"));
+    const char* replace = json_object_get_string(json_object_object_get(jobject, "replacement"));
 
+    fprintf_ln(stderr, _("\nConflict: %s"),conflict);
     fprintf_ln(stderr, _("regex: %s"),regex);
-    fprintf_ln(stderr, _("replace: %s"),replace);
+    fprintf_ln(stderr, _("replacement: %s"),replace);
 
     pid_t pid = fork();
     if (pid == 0) { // child process
@@ -1265,12 +1271,12 @@ static int control_conflict_area(struct rerere_io *cur,struct rerere_io *pre, st
         }
         string_list_append(&post_list,post_buf.buf);
 
-        if (string_list_has_string(&pre_list_A,post_buf.buf)) { // present in part A
-            if (!string_list_has_string(&pre_list_B,post_buf.buf)) { // non present in part B
+        if (unsorted_string_list_has_string(&pre_list_A,post_buf.buf)) { // present in part A
+            if (!unsorted_string_list_has_string(&pre_list_B,post_buf.buf)) { // non present in part B
                 conflict_area = RR_SIDE_1; // set side A
             }
-        }else if (string_list_has_string(&pre_list_B,post_buf.buf)) { // present in part B
-            if (string_list_has_string(&pre_list_B,post_buf.buf)) { // not present in part A
+        }else if (unsorted_string_list_has_string(&pre_list_B,post_buf.buf)) { // present in part B
+            if (unsorted_string_list_has_string(&pre_list_B,post_buf.buf)) { // not present in part A
                 conflict_area = RR_SIDE_2; // set side B
             }
         }
@@ -1858,8 +1864,6 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
         RR_NO_SIDE,
     } conflict_area = RR_NO_SIDE;
 
-    int update_json = 0;
-
     struct rerere_io_file pre;
     const char *pre_path = rerere_path(id, "preimage");
     memset(&pre, 0, sizeof(pre));
@@ -1895,12 +1899,44 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
                 string_list_append(&post_list,post_buf.buf);
                 strbuf_addbuf(&post_buf_out,&post_buf);
 
-                if (string_list_has_string(&pre_list_A,post_buf.buf)) { // present in part A
-                    if (!string_list_has_string(&pre_list_B,post_buf.buf)) { // non present in part B
+                /*for (int i = 0; i < pre_list_A.nr; i++) {
+                    if(strcmp(pre_list_A.items[i].string,post_buf.buf) == 0){
+                        //fprintf_ln(stderr, _("present in part A"));
+                        int found = 0;
+                        for (int j = 0; j < pre_list_B.nr; j++) {
+                            if(strcmp(pre_list_B.items[i].string,post_buf.buf) == 0){
+                                found = 1;
+                                //fprintf_ln(stderr, _("present in part B"));
+                                break;
+                            }
+                        }
+                        if (!found)
+                            conflict_area = RR_SIDE_1; // set side A
+                    }
+                }
+
+                for (int i = 0; i < pre_list_B.nr; i++) {
+                    if(strcmp(pre_list_B.items[i].string,post_buf.buf) == 0){
+                        //fprintf_ln(stderr, _("present in part B"));
+                        int found = 0;
+                        for (int j = 0; j < pre_list_A.nr; j++) {
+                            if(strcmp(pre_list_A.items[i].string,post_buf.buf) == 0){
+                                //fprintf_ln(stderr, _("present in part A"));
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found)
+                            conflict_area = RR_SIDE_2; // set side A
+                    }
+                }*/
+
+                if (unsorted_string_list_has_string(&pre_list_A,post_buf.buf)) { // present in part A
+                    if (!unsorted_string_list_has_string(&pre_list_B,post_buf.buf)) { // non present in part B
                         conflict_area = RR_SIDE_1; // set side A
                     }
-                }else if (string_list_has_string(&pre_list_B,post_buf.buf)) { // present in part B
-                    if (string_list_has_string(&pre_list_B,post_buf.buf)) { // not present in part A
+                }else if (unsorted_string_list_has_string(&pre_list_B,post_buf.buf)) { // present in part B
+                    if (unsorted_string_list_has_string(&pre_list_B,post_buf.buf)) { // not present in part A
                         conflict_area = RR_SIDE_2; // set side B
                     }
                 }
@@ -1908,23 +1944,17 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
 
             if (conflict_area == RR_SIDE_1) {
                 write_conflict_index(pre_buf_B.buf,post_buf_out.buf);
-                if (write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf)) {
-                    update_json = 1;
-                }
+                write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf);
             }
 
             if (conflict_area == RR_SIDE_2) {
                 write_conflict_index(pre_buf_A.buf,post_buf_out.buf);
-                update_json = write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
-                if (write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf)) {
-                    update_json = 1;
-                }
+                write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
             }
         } else {
             //increment postimage pointer
             post.io.getline(&post_buf, &post.io);
         }
-
         strbuf_reset(&pre_buf);
         strbuf_reset(&pre_buf_A);
         strbuf_reset(&pre_buf_B);
@@ -1934,25 +1964,6 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
         string_list_init(&pre_list_A,1);
         string_list_init(&pre_list_B,1);
         string_list_init(&post_list,1);
-    }
-
-    if (update_json) {
-        //TODO adjust the path to jar file
-        pid_t pid = fork();
-        if (pid == 0) { // child process
-            /* open /dev/null for writing */
-            int fd = open("/dev/null", O_WRONLY);
-            dup2(fd, 1);    /* make stdout a copy of fd (> /dev/null) */
-            //dup2(fd, 2);    /* ...and same with stderr */
-            close(fd);
-            fprintf_ln(stderr, _("\n\n\nJAR PROCESS IS STARTING IN BACKGROUND!!!!!\n\n\n"));
-            execl("/usr/bin/java", "/usr/bin/java", "-jar", "/Users/manan/Downloads/git/search-and-replace/RandomSearchReplaceTurtle.jar",
-                  "/Users/manan/Downloads/git/search-and-replace/example_configuration.json",(char*)0);
-        } else { //parent process
-            //int status;
-            //(void)waitpid(pid, &status, 0);
-            //fprintf_ln(stderr, _("\n\n\nGIT PROCESS GO ON !!!!!\n\n\n"));
-        }
     }
 
     strbuf_release(&pre_buf);
@@ -2016,6 +2027,45 @@ static int check_conflict_suggestion(struct index_state *istate, struct rerere_i
     unlink_or_warn(rerere_path(id, "curimage"));
     fprintf_ln(stderr, _("LOG_EXIT: check_conflict_suggestion function"));
     return 1;
+}
+
+static void executeRegexJar()
+{
+    fprintf_ln(stderr, _("LOG_ENTER: executeRegexJar"));
+    if (groupId_list.nr) {
+        int length = 4 + groupId_list.nr; //groupId_list.nr know only at runtime
+        const char **id_array = malloc(sizeof(*id_array) * length);
+
+        id_array[0] = "/usr/bin/java";
+        id_array[1] = "-jar";
+        id_array[2] = "/Users/manan/Downloads/git/search-and-replace/RandomSearchReplaceTurtle.jar";
+
+        fprintf_ln(stderr, _("GROUD_LIST_NR: %u"),groupId_list.nr);
+        for (int j = 0; j < groupId_list.nr; j++) {
+            id_array[j+3] = groupId_list.items[j].string;
+        }
+        id_array[length - 1] = NULL; //terminator need for execv
+
+        //TODO adjust the path to jar file
+        pid_t pid = fork();
+        fprintf_ln(stderr, _("AFTER PID FORK:"));
+        if (pid == 0) { // child process
+            /* open /dev/null for writing */
+            int fd = open("/dev/null", O_WRONLY);
+            dup2(fd, 1);    /* make stdout a copy of fd (> /dev/null) */
+            //dup2(fd, 2);    /* ...and same with stderr */
+            close(fd);
+            fprintf_ln(stderr, _("\n\n\nJAR PROCESS IS STARTING IN BACKGROUND!!!!!\n\n\n"));
+            execv("/usr/bin/java",(void*)id_array);
+        } else { //parent process
+            //int status;
+            //(void)waitpid(pid, &status, 0);
+            //fprintf_ln(stderr, _("\n\n\nGIT PROCESS GO ON !!!!!\n\n\n"));
+        }
+        free(id_array);
+    }
+    fprintf_ln(stderr, _("LOG_EXIT: executeRegexJar"));
+    return;
 }
 
 /*
@@ -2121,6 +2171,7 @@ static int do_plain_rerere(struct repository *r,
     int i;
 
     find_conflict(r, &conflict);
+    string_list_init(&groupId_list,1);
     //fprintf_ln(stderr, _("do_plain_rerere: conflict->nr: '%d'"),conflict.nr);
     /*
      * MERGE_RR records paths with conflicts immediately after
@@ -2172,6 +2223,9 @@ static int do_plain_rerere(struct repository *r,
         do_rerere_one_path(r->index, &rr->items[i], &update);
         fprintf_ln(stderr, _("LOG_EXIT: do_rerere_one_path function"));
     }
+
+    executeRegexJar();
+
     if (update.nr)
         update_paths(r, &update);
 
