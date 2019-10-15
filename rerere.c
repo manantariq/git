@@ -555,7 +555,7 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
     double max_sim = similarity_th;
     char* idCount;
 
-    fprintf_ln(stderr, _("\nconflict: %s"),conflict);
+    //fprintf_ln(stderr, _("\nconflict: %s"),conflict);
     //fprintf_ln(stderr, _("resolution: %s\n"),resolution);
 
     struct json_object *obj;
@@ -586,8 +586,8 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
             if (jaroW >= max_sim) {
                 max_sim = jaroW;
                 groupId = key;
-                fprintf_ln(stderr, _("json_conflict: %s"),jconf);
-                fprintf_ln(stderr, _("json_resolution: %s"),jresol);
+                //fprintf_ln(stderr, _("json_conflict: %s"),jconf);
+                //fprintf_ln(stderr, _("json_resolution: %s"),jresol);
             }
         }
     }
@@ -2141,7 +2141,6 @@ static void do_rerere_one_path(struct index_state *istate,
     /* None of the existing one applies; we need a new variant */
     assign_variant(id);
     fprintf_ln(stderr, _("/* None of the existing one applies; we need a new variant */"));
-
     variant = id->variant;
     handle_file(istate, path, NULL, rerere_path(id, "preimage"));
     if (id->collection->status[variant] & RR_HAS_POSTIMAGE) {
@@ -2251,6 +2250,7 @@ static int is_rerere_enabled(void)
 int setup_rerere(struct repository *r, struct string_list *merge_rr, int flags)
 {
     int fd;
+
     git_rerere_config();
     if (!is_rerere_enabled())
         return -1;
