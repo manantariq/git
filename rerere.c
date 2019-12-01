@@ -17,7 +17,7 @@
 #define PUNTED 1
 #define THREE_STAGED 2
 #define SCALING_FACTOR 0.1
-#define similarity_th 0.85
+#define similarity_th 0.80
 
 void *RERERE_RESOLVED = &RERERE_RESOLVED;
 
@@ -539,7 +539,7 @@ static size_t levenshtein(const char *a, const char *b) {
  */
 static const char* get_conflict_json_id(char* conflict,char* resolution)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: get_conflict_json_id function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: get_conflict_json_id function"));
 
     struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
     if (!file_json) { // if file is empty
@@ -555,19 +555,19 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
     double max_sim = similarity_th;
     char* idCount;
 
-    //fprintf_ln(stderr, _("\nconflict: %s"),conflict);
+    fprintf_ln(stderr, _("\nconflict: %s"),conflict);
     //fprintf_ln(stderr, _("resolution: %s\n"),resolution);
 
     struct json_object *obj;
     const char* jconf;
     const char* jresol;
     int arraylen;
-
+    double total_similarity = 0;
     json_object_object_foreach(file_json,key,val){
         obj = NULL;
         arraylen = json_object_array_length(val);
         idCount = key;
-
+        total_similarity = 0;
         for (int i = 0; i < arraylen; i++) {
             obj = json_object_array_get_idx(val, i);
             jconf = json_object_get_string(json_object_object_get(obj, "conflict"));
@@ -575,20 +575,20 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
 
             if (resolution) {
                 if (strcmp(conflict, jconf) == 0 && strcmp(resolution, jresol) == 0) {
-                    fprintf_ln(stderr,
-                               _("LOG_EXIT: get_conflict_json_id : conflict and resolution already present in json file\n"));
+                    //fprintf_ln(stderr,
+                    //          _("LOG_EXIT: get_conflict_json_id : conflict and resolution already present in json file\n"));
+                    json_object_put(file_json);
                     return NULL;
                 }
             }
 
             jaroW = jaro_winkler_distance(conflict,jconf);
-            //fprintf_ln(stderr, _("jaroW: %lf"),jaroW);
-            if (jaroW >= max_sim) {
-                max_sim = jaroW;
-                groupId = key;
-                //fprintf_ln(stderr, _("json_conflict: %s"),jconf);
-                //fprintf_ln(stderr, _("json_resolution: %s"),jresol);
-            }
+            total_similarity += jaroW;
+        }
+        double avg = total_similarity/arraylen;
+        if (avg >= max_sim) {
+            max_sim = avg;
+            groupId = key;
         }
     }
 
@@ -597,33 +597,34 @@ static const char* get_conflict_json_id(char* conflict,char* resolution)
         groupId = json_object_to_json_string(json_object_new_int(atoi(idCount)+1));
     }
 
-    free(file_json);
-
-    fprintf_ln(stderr, _("LOG_EXIT: get_conflict_json_id : groupID %s"),groupId);
+    fprintf_ln(stderr, _("groupID:  %s"),groupId);
+    //fprintf_ln(stderr, _("LOG_EXIT: get_conflict_json_id : groupID %s"),groupId);
+    json_object_put(file_json);
     return groupId;
 }
-
-static int write_json_conflict_index(char* conflict, char* resolution)
+/*
+ * return 1 if it is multiline otherwise return 0
+ */
+static int is_multiline_string(char* string)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: write_json_conflict_index function"));
+    char *line = strdup(string);
+    strtok(line,"\n");
+    char * secondline= strtok(NULL, "\n");
+    if(secondline != NULL){
+        fprintf_ln(stderr, _("Multiline String is not accepted"));
+        free(line);
+        return 1;
+    }
+    free(line);
+    return 0;
+}
 
-    if (strlen(remove_spaces(conflict)) == 0 || strlen(remove_spaces(resolution)) == 0)
-        return 0;
-
-    struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
-    if (!file_json) // if file is empty
-        file_json = json_object_new_object();
-
-    const char* group_id = get_conflict_json_id(conflict,resolution);
-
-    if (!group_id)
-        return 0;
+static int write_json_object(struct json_object* file_object, char* file_name, const char* group_id, char* conflict, char* resolution){
 
     struct json_object *object = json_object_new_object();
-
     struct json_object *jarray = json_object_new_array();
-    // check if groupId exists in json
-    jarray = json_object_object_get(file_json, group_id);
+
+    jarray = json_object_object_get(file_object, group_id);
 
     if(!jarray)
         jarray = json_object_new_array();
@@ -637,28 +638,68 @@ static int write_json_conflict_index(char* conflict, char* resolution)
         json_object_object_add(object, "conflict", json_object_new_string(conflict));
         json_object_object_add(object, "resolution", json_object_new_string(resolution));
         json_object_array_add(jarray,object);
-        json_object_object_add(file_json,group_id,jarray);
+        json_object_object_add(file_object,group_id,jarray);
     }
 
-    FILE *fp = fopen(".git/rr-cache/conflict_index.json","w");
+    FILE *fp = fopen(file_name,"w");
     if (!fp)
         return 0;
     //update or add groupid to file
-    fprintf(fp,"%s", json_object_to_json_string_ext(file_json,2));
+    fprintf(fp,"%s", json_object_to_json_string_ext(file_object,2));
     fclose(fp);
-
-    string_list_insert(&groupId_list,group_id);
-
-    free(file_json);
     free(object);
     free(jarray);
-    fprintf_ln(stderr, _("LOG_EXIT: write_json_conflict_index function"));
+    return 1;
+}
+
+static int write_json_conflict_index(char* conflict, char* resolution)
+{
+    //fprintf_ln(stderr, _("LOG_ENTER: write_json_conflict_index function"));
+
+    if (strlen(remove_spaces(conflict)) == 0 || strlen(remove_spaces(resolution)) == 0)
+        return 0;
+
+    struct json_object *file_json = json_object_from_file(".git/rr-cache/conflict_index.json");
+
+    if (!file_json) // if file is empty
+        file_json = json_object_new_object();
+
+    const char* group_id = get_conflict_json_id(conflict,resolution);
+
+    if (!group_id) {
+        json_object_put(file_json);
+        return 0;
+    }
+
+    if(!write_json_object(file_json,".git/rr-cache/conflict_index.json",group_id,conflict,resolution)){ //if return 0
+        json_object_put(file_json);
+        return 0;
+    }
+
+    struct json_object *conflict_list = json_object_from_file(".git/rr-cache/conflict_list.json");
+
+    if (!conflict_list) // if file is empty
+        conflict_list = json_object_new_object();
+
+    // write conflict list file
+    if(!write_json_object(conflict_list,".git/rr-cache/conflict_list.json","conflicts_list",conflict,resolution)){ //if return 0
+        json_object_put(file_json);
+        return 0;
+    }
+
+    //save cluster id for jar file
+    string_list_insert(&groupId_list,group_id);
+
+    //free(file_json);
+    json_object_put(file_json);
+    free(conflict_list);
+    //fprintf_ln(stderr, _("LOG_EXIT: write_json_conflict_index function"));
     return 1;
 }
 
 static char* get_file_hash (const char *path)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: get_hash_file function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: get_hash_file function"));
     struct strbuf buf = STRBUF_INIT;
     struct rerere_io_file io;
     memset(&io, 0, sizeof(io));
@@ -682,7 +723,7 @@ static char* get_file_hash (const char *path)
         }
         fclose(io.input);
     }
-    fprintf_ln(stderr, _("LOG_EXIT: get_hash_file function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: get_hash_file function"));
     return 0;
 }
 
@@ -691,7 +732,7 @@ static char* get_file_hash (const char *path)
  */
 static void read_conflict_index(struct list **c_list)
 {
-    fprintf_ln(stderr, _("read_conflict_index: ENTER"));
+    //fprintf_ln(stderr, _("read_conflict_index: ENTER"));
     struct index {
         char conflict[2000];
         char resolution[2000];
@@ -725,7 +766,7 @@ static void read_conflict_index(struct list **c_list)
         fprintf_ln(stderr, _("conflict_index_file does not exist"));
     }
     (*c_list) = conflict_list;
-    fprintf_ln(stderr, _("read_conflict_index: EXIT"));
+    //fprintf_ln(stderr, _("read_conflict_index: EXIT"));
 }
 
 static void write_conflict_index(char* conflict, char* resolution)
@@ -754,17 +795,11 @@ static void write_conflict_index(char* conflict, char* resolution)
 static int handle_conflict(struct strbuf *out, struct rerere_io *io,
                            int marker_size, git_hash_ctx *ctx)
 {
-    //fprintf_ln(stderr, _("LOG_ENTER: handle_conflict function"));
     enum {
-        RR_SIDE_1 = 0,  // = 0
-        RR_SIDE_2,      // = 1
-        RR_ORIGINAL     // = 2
+        RR_SIDE_1 = 0, RR_SIDE_2, RR_ORIGINAL
     } hunk = RR_SIDE_1;
-    struct strbuf   one = STRBUF_INIT,
-            two = STRBUF_INIT;
-
-    struct strbuf   buf = STRBUF_INIT,
-            conflict = STRBUF_INIT;
+    struct strbuf one = STRBUF_INIT, two = STRBUF_INIT;
+    struct strbuf buf = STRBUF_INIT, conflict = STRBUF_INIT;
     int has_conflicts = -1;
 
     while (!io->getline(&buf, io)) {
@@ -818,7 +853,7 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
     strbuf_release(&one);
     strbuf_release(&two);
     strbuf_release(&buf);
-    //fprintf_ln(stderr, _("LOG_EXIT: handle_conflict function"));
+
     return has_conflicts;
 }
 
@@ -836,7 +871,6 @@ static int handle_conflict(struct strbuf *out, struct rerere_io *io,
  */
 static int handle_path(unsigned char *hash, struct rerere_io *io, int marker_size)
 {
-    //fprintf_ln(stderr, _("LOG_ENTER: handle_path function"));
     git_hash_ctx ctx;
     struct strbuf buf = STRBUF_INIT, out = STRBUF_INIT;
     int has_conflicts = 0;
@@ -859,7 +893,7 @@ static int handle_path(unsigned char *hash, struct rerere_io *io, int marker_siz
 
     if (hash)
         the_hash_algo->final_fn(hash, &ctx);
-    //fprintf_ln(stderr, _("LOG_EXIT: handle_path function"));
+
     return has_conflicts;
 }
 
@@ -880,31 +914,20 @@ static int my_cmarker(char *buf, int marker_char, int marker_size)
 
 static void regex_repalce_suggestion(char *conflict)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: regex_repalce_suggestion"));
-
+    //fprintf_ln(stderr, _("LOG_ENTER: regex_repalce_suggestion"));
+/*
     struct json_object *regex_json = json_object_from_file("/Users/manan/CLionProjects/git/search-and-replace/regex_replace_index.json");
     if (!regex_json) {
         fprintf_ln(stderr, _("LOG_EXIT: regex_repalce_suggestion: regex_replace_index does not exists "));
         return;
     }
-
+*/
     const char *groupId = get_conflict_json_id(conflict,NULL);
 
     if (!groupId)
         return;
 
-    // check if groupId exists in json
-    struct json_object *jobject = json_object_object_get(regex_json, groupId);
-    if (!jobject)
-        return;
-
-    const char* regex = json_object_get_string(json_object_object_get(jobject, "regex"));
-    const char* replace = json_object_get_string(json_object_object_get(jobject, "replacement"));
-
-    fprintf_ln(stderr, _("\nConflict: %s"),conflict);
-    fprintf_ln(stderr, _("regex: %s"),regex);
-    fprintf_ln(stderr, _("replacement: %s"),replace);
-
+    //fprintf_ln(stderr, _("\nConflict: %s"),conflict);
     pid_t pid = fork();
     if (pid == 0) { // child process
         /* open /dev/null for writing */
@@ -912,14 +935,14 @@ static void regex_repalce_suggestion(char *conflict)
         dup2(fd, 1);    /* make stdout a copy of fd (> /dev/null) */
         //dup2(fd, 2);    /* ...and same with stderr */
         close(fd);
-        execl("/usr/bin/java", "/usr/bin/java", "-jar", "/Users/manan/Downloads/RegexReplacement.jar",conflict,regex,replace,(char*)0);
+        execl("/usr/bin/java", "/usr/bin/java", "-jar", "/Users/manan/CLionProjects/git/search-and-replace/RegexReplacement.jar","/Users/manan/CLionProjects/git/search-and-replace/",groupId,conflict,(char*)0);
     } else { //parent process
         int status;
         (void)waitpid(pid, &status, 0);
-        printf("\nJar Process terminate with code: %d\n",status);
+        //printf("\nJar Process terminate with code: %d\n",status);
 
         if (!status) {
-            struct strbuf buf = STRBUF_INIT;
+            struct strbuf buf1 = STRBUF_INIT, buf2 = STRBUF_INIT, buf3 = STRBUF_INIT;
             struct rerere_io_file io;
             memset(&io, 0, sizeof(io));
             io.io.getline = rerere_file_getline;
@@ -927,29 +950,71 @@ static void regex_repalce_suggestion(char *conflict)
 
             io.io.wrerror = 0;
             if (io.input) {
-                while (!io.io.getline(&buf, &io.io)) {
-                    fprintf_ln(stderr, _("REGEX REPLACEMENT: %s"), buf.buf);
+                char *regex1=NULL, *regex2=NULL, *replace1=NULL, *replace2=NULL, *res1=NULL, *res2=NULL;
+                // read first resolution
+                if (!io.io.getline(&buf1, &io.io) && !io.io.getline(&buf2, &io.io) && !io.io.getline(&buf3, &io.io)) {
+                    regex1 = buf1.buf;
+                    replace1 = buf2.buf;
+                    res1 = buf3.buf;
+                }
+                // read second resolution
+                if (!io.io.getline(&buf1, &io.io) && !io.io.getline(&buf2, &io.io) && !io.io.getline(&buf3, &io.io)) {
+                    regex2 = buf1.buf;
+                    replace2 = buf2.buf;
+                    res2 = buf3.buf;
+                }
+
+                if(res1 && res2){
+                    double jw1 = jaro_winkler_distance(conflict,res1);
+                    double jw2 = jaro_winkler_distance(conflict,res2);
+                    FILE *fp = fopen(".git/rr-cache/regex_replace_result.txt","a+");
+                    fprintf(fp, "\nconflict: %s",conflict);
+                    fprintf(fp, "groupID: %s",groupId);
+                    if(jw1 >= jw2){
+                        fprintf(fp, "regex: %s",regex1);
+                        fprintf(fp, "replacement: %s",replace1);
+                        fprintf(fp, "regex & replacement: %s",res1);
+                    }else{
+                        fprintf(fp, "regex: %s",regex2);
+                        fprintf(fp, "replacement: %s",replace2);
+                        fprintf(fp, "regex & replacement: %s",res2);
+                    }
+                    fclose(fp);
+                }else{
+                    FILE *fp = fopen(".git/rr-cache/regex_replace_result.txt","a+");
+                    fprintf(fp, "conflict: %s",conflict);
+                    fprintf(fp, "groupID: %s",groupId);
+                    fprintf(fp, "regex: %s",regex1);
+                    fprintf(fp, "replacement: %s",replace1);
+                    fprintf(fp, "regex & replacement: %s",res1);
                 }
                 fclose(io.input);
                 unlink_or_warn(".git/rr-cache/string_replace.txt");
+            }else{
+                FILE *fp = fopen(".git/rr-cache/regex_replace_result.txt","a+");
+                fprintf(fp, "conflict: %s",conflict);
+                fprintf(fp, "groupID: %s",groupId);
+                fprintf(fp, "Regex not apply: %s",conflict);
             }
-            strbuf_release(&buf);
+            strbuf_release(&buf1);
+            strbuf_release(&buf2);
+            strbuf_release(&buf3);
         }
     }
-    free(regex_json);
-    free(jobject);
-    fprintf_ln(stderr, _("LOG_EXIT: regex_repalce_suggestion"));
+    //free(regex_json);
+    //free(jobject);
+    //fprintf_ln(stderr, _("LOG_EXIT: regex_repalce_suggestion"));
 }
 
 static void conflict_suggestion(char *conflict)
 {
-    fprintf_ln(stderr, _("conflict_suggestion: ENTER"));
+    //fprintf_ln(stderr, _("conflict_suggestion: ENTER"));
     //struct list conflict_list = read_conflict_index();
     struct list *conflict_list = NULL;
     read_conflict_index(&conflict_list);
 
     if (!conflict_list) {
-        fprintf_ln(stderr, _("conflict_suggestion: EXIT"));
+        //fprintf_ln(stderr, _("conflict_suggestion: EXIT"));
         return;
     }
     struct list *current = conflict_list;
@@ -959,7 +1024,7 @@ static void conflict_suggestion(char *conflict)
     double max_similarity = 0;
     char* solution;
     char* file_conflict;
-    fprintf_ln(stderr, _("conflict_suggestion: conflict: %s\n"),conflict);
+    //fprintf_ln(stderr, _("conflict_suggestion: conflict: %s\n"),conflict);
     while (current != NULL) {
         jaroW = jaro_winkler_distance(conflict,current->conflict);
         leve = levenshtein(conflict,current->conflict);
@@ -975,13 +1040,13 @@ static void conflict_suggestion(char *conflict)
 
     free(current);
     free(conflict_list);
-    fprintf_ln(stderr, _("conflict_suggestion: EXIT"));
+    //fprintf_ln(stderr, _("conflict_suggestion: EXIT"));
 }
 
 
 static int control_whitespace_diff(char *cur_s, char *pre_s,struct strbuf *out_buf)
 {
-    fprintf_ln(stderr, _("control_whitespace_diff: ENTER"));
+    //fprintf_ln(stderr, _("control_whitespace_diff: ENTER"));
 
     if (strcmp(remove_spaces(cur_s),remove_spaces(pre_s)) != 0) {
         return 0; // if without whitespaces strings are different
@@ -1012,13 +1077,13 @@ static int control_whitespace_diff(char *cur_s, char *pre_s,struct strbuf *out_b
 
     free(cur_str);
     free(pre_str);
-    fprintf_ln(stderr, _("control_whitespace_diff: EXIT"));
+    //fprintf_ln(stderr, _("control_whitespace_diff: EXIT"));
     return 1;
 }
 
 static char* get_html_comment(char *buf)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: get_html_comment"));
+    //fprintf_ln(stderr, _("LOG_ENTER: get_html_comment"));
 
     const char *PATTERN1 = "<!--";
     const char *PATTERN2 = " <!--";
@@ -1058,8 +1123,8 @@ static char* get_html_comment(char *buf)
         }
         //}
     }
-    fprintf_ln(stderr, _("No HTML Comment Found"));
-    fprintf_ln(stderr, _("LOG_EXIT: get_html_comment"));
+    //fprintf_ln(stderr, _("No HTML Comment Found"));
+    //fprintf_ln(stderr, _("LOG_EXIT: get_html_comment"));
     return comment;
 }
 
@@ -1118,7 +1183,7 @@ static int control_html_comment(struct strbuf *cur_buf,struct strbuf *pre_buf,st
 
 static int control_line_character(struct string_list *list_A,struct string_list *list_B, struct strbuf *out_buf)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: control_line_character"));
+    //fprintf_ln(stderr, _("LOG_ENTER: control_line_character"));
 
     struct strbuf buf_A = STRBUF_INIT, buf_B = STRBUF_INIT;
 
@@ -1176,7 +1241,7 @@ static int control_line_character(struct string_list *list_A,struct string_list 
     }
     strbuf_release(&buf_A);
     strbuf_release(&buf_B);
-    fprintf_ln(stderr, _("LOG_EXIT: control_line_character"));
+    //fprintf_ln(stderr, _("LOG_EXIT: control_line_character"));
     return 1;
 }
 
@@ -1236,7 +1301,7 @@ static int separate_conflict_area(struct rerere_io *io,struct strbuf *buf_A,stru
 static int control_conflict_area(struct rerere_io *cur,struct rerere_io *pre, struct rerere_io *post,
                                  struct strbuf *pre_out_buf,struct strbuf *post_out_buf,int marker_size)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: control_conflict_area"));
+    //fprintf_ln(stderr, _("LOG_ENTER: control_conflict_area"));
 
     struct rerere_io    *cur_io = cur,
             *pre_io = pre;
@@ -1353,7 +1418,7 @@ static int control_conflict_area(struct rerere_io *cur,struct rerere_io *pre, st
     string_list_clear(&pre_list_B,1);
     string_list_clear(&post_list,1);
 
-    fprintf_ln(stderr, _("LOG_EXIT: control_conflict_area"));
+    //fprintf_ln(stderr, _("LOG_EXIT: control_conflict_area"));
     return 1;
 }
 
@@ -1361,7 +1426,7 @@ static int control_conflict_area(struct rerere_io *cur,struct rerere_io *pre, st
 static int compare_n_update(struct rerere_io *cur,struct rerere_io *pre,struct rerere_io *post,
                             struct strbuf *pre_out_buf,struct strbuf *post_out_buf,int marker_size)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: compare_n_update"));
+    //fprintf_ln(stderr, _("LOG_ENTER: compare_n_update"));
 
     struct strbuf cur_buf = STRBUF_INIT, pre_buf = STRBUF_INIT, post_buf = STRBUF_INIT;
     int pre_marker_found = 0;
@@ -1417,7 +1482,7 @@ static int compare_n_update(struct rerere_io *cur,struct rerere_io *pre,struct r
     strbuf_release(&cur_buf);
     strbuf_release(&pre_buf);
     strbuf_release(&post_buf);
-    fprintf_ln(stderr, _("LOG_EXIT: compare_n_update"));
+    //fprintf_ln(stderr, _("LOG_EXIT: compare_n_update"));
     return 1;
 }
 
@@ -1698,7 +1763,7 @@ static void remove_variant(struct rerere_id *id)
 static int check_hash_change(struct index_state *istate,
                              const char *path,char* old_hash,char * new_hash)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: check_hash_change"));
+    //fprintf_ln(stderr, _("LOG_ENTER: check_hash_change"));
 
     struct rerere_id *old_id = new_rerere_id_hex(old_hash);
     struct rerere_id *new_id = new_rerere_id_hex(new_hash);
@@ -1797,7 +1862,7 @@ static int check_hash_change(struct index_state *istate,
         break;
     }
 
-    fprintf_ln(stderr, _("LOG_EXIT: check_hash_change"));
+    //fprintf_ln(stderr, _("LOG_EXIT: check_hash_change"));
     return  1;
 }
 
@@ -1806,7 +1871,7 @@ static int check_hash_change(struct index_state *istate,
  */
 static int hash_index_file(const char *fname,const char *path,const char *hash) {
 
-    fprintf_ln(stderr, _("LOG ENTER: hash_index_file "));
+    //fprintf_ln(stderr, _("LOG ENTER: hash_index_file "));
 
     int found = 0;
     char buffer[256];
@@ -1864,7 +1929,7 @@ static int hash_index_file(const char *fname,const char *path,const char *hash) 
     }
     unlink_or_warn(".git/rr-cache/temp");
 
-    fprintf_ln(stderr, _("LOG EXIT: hash_index_file "));
+    //fprintf_ln(stderr, _("LOG EXIT: hash_index_file "));
     return found;
 }
 
@@ -1873,7 +1938,7 @@ static int hash_index_file(const char *fname,const char *path,const char *hash) 
  */
 static int conflict_index_file(struct rerere_id *id, int marker_size)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: conflict_index_file function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: conflict_index_file function"));
 
     struct strbuf pre_buf = STRBUF_INIT;
     //int pre_marker_found = 1;
@@ -1933,12 +1998,24 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
 
             if (conflict_area == RR_SIDE_1) {
                 //write_conflict_index(pre_buf_B.buf,post_buf_out.buf);
-                write_json_conflict_index(pre_buf_B.buf,post_buf_out.buf);
+                if(!is_multiline_string(pre_buf_B.buf) && !is_multiline_string(post_buf_out.buf)) {
+                    strbuf_trim(&pre_buf_B);
+                    strbuf_trim(&post_buf_out);
+                    strbuf_trim_trailing_newline(&pre_buf_B);
+                    strbuf_trim_trailing_newline(&post_buf_out);
+                    write_json_conflict_index(pre_buf_B.buf, post_buf_out.buf);
+                }
             }
 
             if (conflict_area == RR_SIDE_2) {
                 //write_conflict_index(pre_buf_A.buf,post_buf_out.buf);
-                write_json_conflict_index(pre_buf_A.buf,post_buf_out.buf);
+                if(!is_multiline_string(pre_buf_A.buf) && !is_multiline_string(post_buf_out.buf)) {
+                    strbuf_trim(&pre_buf_A);
+                    strbuf_trim(&post_buf_out);
+                    strbuf_trim_trailing_newline(&pre_buf_A);
+                    strbuf_trim_trailing_newline(&post_buf_out);
+                    write_json_conflict_index(pre_buf_A.buf, post_buf_out.buf);
+                }
             }
         } else {
             //increment postimage pointer
@@ -1968,14 +2045,17 @@ static int conflict_index_file(struct rerere_id *id, int marker_size)
     fclose(pre.input);
     fclose(post.input);
 
-    fprintf_ln(stderr, _("LOG_EXIT: conflict_index_file function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: conflict_index_file function"));
     return 1;
 }
 
 static int check_conflict_suggestion(struct index_state *istate, struct rerere_id *id,const char* path)
 {
-    if(access(git_path("rr-cache/%s", "conflict_index"), F_OK ) == -1  &&  access(git_path("rr-cache/%s", "regex_replace_index.json"), F_OK ) == -1)
+    //fprintf_ln(stderr, _("LOG_ENTER: check_conflict_suggestion"));
+    if(access(git_path("rr-cache/%s", "conflict_index.json"), F_OK ) == -1) {
+        fprintf_ln(stderr, _("check_conflict_suggestion: No file Conflict_index.json"));
         return 0;
+    }
 
     if (handle_file(istate, path, NULL, rerere_path(id, "curimage")) < 0) {
         return  0;
@@ -2001,8 +2081,14 @@ static int check_conflict_suggestion(struct index_state *istate, struct rerere_i
             separate_conflict_area(&cur.io, &cur_buf_A, &cur_buf_B, marker_size, &cur_list_A, &cur_list_B);
             //conflict_suggestion(cur_buf_A.buf);
             //conflict_suggestion(cur_buf_B.buf);
-            regex_repalce_suggestion(cur_buf_A.buf);
-            regex_repalce_suggestion(cur_buf_B.buf);
+            if(!is_multiline_string(cur_buf_A.buf) && !is_multiline_string(cur_buf_B.buf)) {
+                strbuf_trim(&cur_buf_A);
+                strbuf_trim_trailing_newline(&cur_buf_A);
+                regex_repalce_suggestion(cur_buf_A.buf);
+                strbuf_trim(&cur_buf_B);
+                strbuf_trim_trailing_newline(&cur_buf_B);
+                regex_repalce_suggestion(cur_buf_B.buf);
+            }
         }
         strbuf_reset(&cur_buf_A);
         strbuf_reset(&cur_buf_B);
@@ -2016,30 +2102,31 @@ static int check_conflict_suggestion(struct index_state *istate, struct rerere_i
 
     fclose(cur.input);
     unlink_or_warn(rerere_path(id, "curimage"));
-    fprintf_ln(stderr, _("LOG_EXIT: check_conflict_suggestion function"));
+    //fprintf_ln(stderr, _("LOG_EXIT: check_conflict_suggestion function"));
     return 1;
 }
 
 static void executeRegexJar()
 {
-    fprintf_ln(stderr, _("LOG_ENTER: executeRegexJar"));
+    //fprintf_ln(stderr, _("LOG_ENTER: executeRegexJar"));
     if (groupId_list.nr) {
-        int length = 4 + groupId_list.nr; //groupId_list.nr know only at runtime
+        int length = 5 + groupId_list.nr; //groupId_list.nr know only at runtime
         const char **id_array = malloc(sizeof(*id_array) * length);
 
         id_array[0] = "/usr/bin/java";
         id_array[1] = "-jar";
         id_array[2] = "/Users/manan/CLionProjects/git/search-and-replace/RandomSearchReplaceTurtle.jar";
+        id_array[3] = "/Users/manan/CLionProjects/git/search-and-replace/"; //config.properties path
 
         fprintf_ln(stderr, _("GROUD_LIST_NR: %u"),groupId_list.nr);
         for (int j = 0; j < groupId_list.nr; j++) {
-            id_array[j+3] = groupId_list.items[j].string;
+            id_array[j+4] = groupId_list.items[j].string;
         }
         id_array[length - 1] = NULL; //terminator need for execv
 
         //TODO adjust the path to jar file
         pid_t pid = fork();
-        fprintf_ln(stderr, _("AFTER PID FORK:"));
+        //fprintf_ln(stderr, _("AFTER PID FORK:"));
         if (pid == 0) { // child process
             /* open /dev/null for writing */
             int fd = open("/dev/null", O_WRONLY);
@@ -2055,7 +2142,7 @@ static void executeRegexJar()
         }
         free(id_array);
     }
-    fprintf_ln(stderr, _("LOG_EXIT: executeRegexJar"));
+    //fprintf_ln(stderr, _("LOG_EXIT: executeRegexJar"));
     return;
 }
 
@@ -2070,7 +2157,7 @@ static void do_rerere_one_path(struct index_state *istate,
                                struct string_list_item *rr_item,
                                struct string_list *update)
 {
-    fprintf_ln(stderr, _("LOG_ENTER: do_rerere_one_path function"));
+    //fprintf_ln(stderr, _("LOG_ENTER: do_rerere_one_path function"));
     const char *path = rr_item->string;
     struct rerere_id *id = rr_item->util;
     struct rerere_dir *rr_dir = id->collection;
@@ -2106,7 +2193,7 @@ static void do_rerere_one_path(struct index_state *istate,
 
     /* Does any existing resolution apply cleanly? */
     for (variant = 0; variant < rr_dir->status_nr; variant++) {
-        fprintf_ln(stderr, _("/* Does any existing resolution apply cleanly? */ variant: '%d'"), variant);
+        //fprintf_ln(stderr, _("/* Does any existing resolution apply cleanly? */ variant: '%d'"), variant);
         const int both = RR_HAS_PREIMAGE | RR_HAS_POSTIMAGE;
         struct rerere_id vid = *id;
 
@@ -2140,7 +2227,7 @@ static void do_rerere_one_path(struct index_state *istate,
 
     /* None of the existing one applies; we need a new variant */
     assign_variant(id);
-    fprintf_ln(stderr, _("/* None of the existing one applies; we need a new variant */"));
+    //fprintf_ln(stderr, _("/* None of the existing one applies; we need a new variant */"));
     variant = id->variant;
     handle_file(istate, path, NULL, rerere_path(id, "preimage"));
     if (id->collection->status[variant] & RR_HAS_POSTIMAGE) {
@@ -2190,8 +2277,8 @@ static int do_plain_rerere(struct repository *r,
             continue;
 
         char *old_hash = get_file_hash(path);
-        fprintf_ln(stderr, _("old hash: %s"),old_hash);
-        fprintf_ln(stderr, _("new hash: %s"),sha1_to_hex(hash));
+        //fprintf_ln(stderr, _("old hash: %s"),old_hash);
+        //fprintf_ln(stderr, _("new hash: %s"),sha1_to_hex(hash));
 
         if (old_hash && strcmp(old_hash,sha1_to_hex(hash)) != 0) {
             //check_hash_change(r->index,path, old_hash,sha1_to_hex(hash));
@@ -2210,7 +2297,7 @@ static int do_plain_rerere(struct repository *r,
 
     for (i = 0; i < rr->nr; i++) {
         do_rerere_one_path(r->index, &rr->items[i], &update);
-        fprintf_ln(stderr, _("LOG_EXIT: do_rerere_one_path function"));
+        //fprintf_ln(stderr, _("LOG_EXIT: do_rerere_one_path function"));
     }
 
     executeRegexJar();
