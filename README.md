@@ -73,6 +73,16 @@ and the name as (depending on your mood):
    ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS) $(JSON_CFLAGS)
    ALL_LDFLAGS = $(LDFLAGS) $(JSON_LDFLAGS)
    ```   
+   linux - line 1188:
+    ```   
+    JSON_C_DIR=/usr/local
+    CFLAGS += -I$(JSON_C_DIR)/include/json-c
+    LDFLAGS+= -L$(JSON_C_DIR)/lib -ljson-c
+    
+    ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS) $(JSON_CFLAGS)
+    ALL_LDFLAGS = $(LDFLAGS) $(JSON_LDFLAGS)
+    ```
+   
    linux - line 1977:
    ```   
    LIBS = $(filter-out %.o, $(GITLIBS)) $(EXTLIBS)  -ljson-c
