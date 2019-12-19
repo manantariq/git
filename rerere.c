@@ -1773,8 +1773,6 @@ static int check_hash_change(struct index_state *istate,
 
         const int both = RR_HAS_PREIMAGE | RR_HAS_POSTIMAGE;
         struct rerere_id vold_id = *old_id;
-        struct strbuf pre_out_buf = STRBUF_INIT;
-        struct strbuf post_out_buf = STRBUF_INIT;
 
         if ((old_id->collection->status[variant] & both) != both)
             continue;
@@ -1810,6 +1808,9 @@ static int check_hash_change(struct index_state *istate,
         post.io.wrerror = 0;
         if (!post.input)
             return error_errno(_("could not open '%s'"), post_path);
+
+        struct strbuf pre_out_buf = STRBUF_INIT;
+        struct strbuf post_out_buf = STRBUF_INIT;
 
         int res = compare_n_update((struct rerere_io *)&cur,(struct rerere_io *)&pre,(struct rerere_io *)&post,
                                    &pre_out_buf,&post_out_buf,marker_size);
@@ -1850,7 +1851,7 @@ static int check_hash_change(struct index_state *istate,
                       out_path, strerror(out.io.wrerror));
             if (out.io.output && fclose(out.io.output))
                 out.io.wrerror = error_errno(_("failed to flush '%s'"), out_path);
-
+            break;
         }
         unlink_or_warn(rerere_path(&vold_id, "curimage"));
         free_rerere_dirs();
@@ -1861,7 +1862,6 @@ static int check_hash_change(struct index_state *istate,
         strbuf_release(&post_out_buf);
         break;
     }
-
     //fprintf_ln(stderr, _("LOG_EXIT: check_hash_change"));
     return  1;
 }

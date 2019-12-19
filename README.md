@@ -58,6 +58,31 @@ and the name as (depending on your mood):
  - "global information tracker": you're in a good mood, and it actually
    works for you. Angels sing, and a light suddenly fills the room.
  - "goddamn idiotic truckload of sh*t": when it breaks
+ 
+ 
+ 
+ Git - Almost-Rerere
+ =========================================================
+ - clone and install json-c <https://github.com/json-c/json-c>
+ - Update git MakeFile like this:
+   
+   macOS - line 1187:
+   ```
+   JSON_CFLAGS += $(shell pkg-config --cflags json-c)
+   JSON_LDFLAGS += $(shell pkg-config --libs json-c)
+   ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS) $(JSON_CFLAGS)
+   ALL_LDFLAGS = $(LDFLAGS) $(JSON_LDFLAGS)
+   ```   
+   linux - line 1977:
+   ```   
+   LIBS = $(filter-out %.o, $(GITLIBS)) $(EXTLIBS)  -ljson-c
+   ``` 
+ - Compile git project
+ - Enable Rerere : create .git/rr-cache/ directory
+ - Prepare additional java components:
+    - clone <https://github.com/manantariq/Search-and-Replace>
+    - Update the path in config.properties
+    - Update the path in rerere.c for RandomSearchReplaceTurtle.jar and RegexReplacement.jar
 
 [INSTALL]: INSTALL
 [Documentation/gittutorial.txt]: Documentation/gittutorial.txt
